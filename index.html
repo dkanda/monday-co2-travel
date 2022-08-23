@@ -1,0 +1,82 @@
+
+
+<html>
+  <head>
+    <title>Add Map</title>
+<head>
+  <script src="https://cdn.jsdelivr.net/npm/monday-sdk-js/dist/main.js"></script>
+</head>
+    <link rel="stylesheet" type="text/css" href="./style.css" />
+    <script type="text/javascript">
+    // Initialize and add the map
+	function initMap() {
+	  // The location of Uluru
+	  const uluru = { lat: -25.344, lng: 131.031 };
+	  // The map, centered at Uluru
+	  const map = new google.maps.Map(document.getElementById("map"), {
+	    zoom: 4,
+	    center: uluru,
+	  });
+	  // The marker, positioned at Uluru
+	  const marker = new google.maps.Marker({
+	    position: uluru,
+	    map: map,
+	  });
+	}
+
+	window.initMap = initMap;
+// const monday = window.mondaySdk()
+// monday.api(`query {
+//     users () {
+//         name
+//     		location
+//         email
+//         birthday
+//         photo_thumb
+//         account {
+//             name
+//             id
+//         }
+//     }
+// }`).then(res => {
+//   console.log(res);
+//   /* { data: { users: [{id: 12312, name: "Bart Simpson"}, {id: 423423, name: "Homer Simpson"}] } } */
+// });    
+var userData = {
+    "data": {
+        "users": [
+            {
+                "name": "Jacques Cousteau",
+                "location": null,
+                "email": "jc@gmail.com",
+                "birthday": null,
+                "photo_thumb": "https://cdn1.monday.com/dapulse_default_photo.png",
+                "account": {
+                    "name": "Cousteau",
+                    "id": 13182763
+                }
+            }
+        ]
+    },
+    "account_id": 13182763
+};
+</script>
+    <style>
+    #map {
+	  height: 400px;
+	  /* The height is 400 pixels */
+	  width: 100%;
+	  /* The width is the width of the web page */
+	}
+    </style>
+  </head>
+  <body>
+    <h3>My Google Maps Demo</h3>
+    <!--The div element for the map -->
+    <div id="map"></div>
+    <script
+      src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJ5et57HQ4OUOpLScdFM-5a-2PjRZl3uk&callback=initMap&v=weekly"
+      defer
+    ></script>
+  </body>
+</html>
