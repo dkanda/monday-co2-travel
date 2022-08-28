@@ -1,82 +1,391 @@
-
-
 <html>
-  <head>
-    <title>Add Map</title>
+
 <head>
-  <script src="https://cdn.jsdelivr.net/npm/monday-sdk-js/dist/main.js"></script>
-</head>
+    <title>Add Map</title>
+
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/monday-sdk-js/dist/main.js"></script>
+    </head>
     <link rel="stylesheet" type="text/css" href="./style.css" />
     <script type="text/javascript">
-    // Initialize and add the map
-	function initMap() {
-	  // The location of Uluru
-	  const uluru = { lat: -25.344, lng: 131.031 };
-	  // The map, centered at Uluru
-	  const map = new google.maps.Map(document.getElementById("map"), {
-	    zoom: 4,
-	    center: uluru,
-	  });
-	  // The marker, positioned at Uluru
-	  const marker = new google.maps.Marker({
-	    position: uluru,
-	    map: map,
-	  });
-	}
+        let map;
+        let infoWindow;
+        var selectedPeople = [];
+        var gmarkers = [];
+        var markers = [];
+        var cities = [];
+        var results = [];
+        var bestCoords = {};
+        var heatMap = [];
+        var bestMarker;
+        var bestCo2 = 999999999.9;
+        var worstCo2 = -1.0;
+        var iconsFromCities = {};
+        var lastTeamMates = "";
+        var isDrawHeatMap = false;
+        var lines = []
+        // Initialize and add the map
+        function initMap() {
+            map = new google.maps.Map(document.getElementById("map"), {
+                zoom: 3,
+                center: { lat: 0, lng: 0 },
+                disableDefaultUI: true
+            });
 
-	window.initMap = initMap;
-// const monday = window.mondaySdk()
-// monday.api(`query {
-//     users () {
-//         name
-//     		location
-//         email
-//         birthday
-//         photo_thumb
-//         account {
-//             name
-//             id
-//         }
-//     }
-// }`).then(res => {
-//   console.log(res);
-//   /* { data: { users: [{id: 12312, name: "Bart Simpson"}, {id: 423423, name: "Homer Simpson"}] } } */
-// });    
-var userData = {
-    "data": {
-        "users": [
-            {
-                "name": "Jacques Cousteau",
-                "location": null,
-                "email": "jc@gmail.com",
-                "birthday": null,
-                "photo_thumb": "https://cdn1.monday.com/dapulse_default_photo.png",
-                "account": {
-                    "name": "Cousteau",
-                    "id": 13182763
+
+            infoWindow = new google.maps.InfoWindow({
+                content: "Click the map to set the offsite!",
+                position: { lat: 0, lng: 0 },
+            });
+            infoWindow.open(map)
+
+            map.addListener("click", (mapsMouseEvent) => {
+                placeOptionalMarker(mapsMouseEvent.latLng, null, 2)
+            });
+        }
+
+        window.initMap = initMap;
+        const monday = window.mondaySdk()
+
+        const callback = res => {
+            // Teammates Changed
+            if (JSON.stringify(res.data.users.teammates) != lastTeamMates) {
+                clearMap()
+                console.log(res)
+                lastTeamMates = JSON.stringify(res.data.users.teammates)
+                let indices = []
+                for (let userId of res.data.users.teammates) {
+                    for (i = 0; i < userData.data.users.length; i++) {
+                        if (userId == userData.data.users[i].id) {
+                            indices.push(i)
+                        }
+                    }
+                }
+                console.log(indices)
+                placeMarkers(indices.sort())
+            }
+
+            isDrawHeatMap = res.data.heatmap;
+            process()
+        };
+        monday.listen('settings', callback);
+
+        // Initial Data Pull from Monday.
+        monday.api(`query {
+            users () {
+                id
+                name
+                    location
+                email
+                birthday
+                photo_tiny
+                account {
+                    name
+                    id
                 }
             }
-        ]
-    },
-    "account_id": 13182763
-};
-</script>
+        }`).then(res => {
+            userData = res;
+
+            for (i = 0; i < userData.data.users.length; i++) {
+                iconsFromCities[userData.data.users[i].location.split(',')[0].toLowerCase()] = userData.data.users[i].photo_tiny
+            }
+
+        });
+
+        function clearMap() {
+            for (let marker of markers) {
+                marker.setMap(null);
+            }
+            for (let circle of heatMap) {
+                circle.setMap(null);
+            }
+            if (bestMarker !== undefined) {
+                bestMarker.setMap(null)
+            }
+            for (let line of lines) {
+                line.setMap(null);
+            }
+            lines = []
+        }
+
+        function process() {
+            if (bestMarker !== undefined) {
+                bestMarker.setMap(null)
+            }
+            getBestLocation();
+            if (isDrawHeatMap) {
+                drawHeatMap();
+            }
+            else {
+                for (let circle of heatMap) {
+                    circle.setMap(null);
+                }
+            }
+
+        }
+        function convertToCO2(distance) {
+            distance = distance / 1000; //convert to KM
+            // Polynomial formula to calculate KG/Co2 for a given distances in KM. 
+            // Calculated from values returned from https://www.icao.int/environmental-protection/Carbonoffset/Pages/default.aspx
+            return -0.00000785 * Math.pow(distance, 2) + 0.09288205 * distance + 28.56176083
+        }
+
+        function placeOptionalMarker(marker) {
+            infoWindow.close()
+            infoWindow = new google.maps.InfoWindow({
+                position: marker,
+            });
+
+            co2 = 0.0;
+            for (k = 0; k < gmarkers.length; k++) {
+                co2 += parseFloat(convertToCO2(getDistance(JSON.parse(JSON.stringify(marker)), gmarkers[k])));
+            }
+
+            infoWindow.setContent(
+                co2.toFixed(2) + " kg CO2"
+            );
+            infoWindow.open(map);
+
+        }
+
+        // Get the distance between two lat,lng coordinates on earth using Haversine formula
+        // https://www.movable-type.co.uk/scripts/latlong.html
+        function getDistance(point1, point2) {
+            let R = 6371e3; // metres
+            let f1 = point1.lat * Math.PI / 180; // φ, λ in radians
+            let o2 = point2.lat * Math.PI / 180;
+            let df = (point2.lat - point1.lat) * Math.PI / 180;
+            let dl = (point2.lng - point1.lng) * Math.PI / 180;
+
+            let a = Math.sin(df / 2) * Math.sin(df / 2) +
+                Math.cos(f1) * Math.cos(o2) *
+                Math.sin(dl / 2) * Math.sin(dl / 2);
+            let c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+            return (R * c); // in metres
+        }
+
+        //Gets two boundary points binding all the lat/lon points together.
+        function getRange() {
+            let minLat = 99999
+            let maxLat = -99999
+
+            let minLng = 99999
+            let maxLng = -99999
+
+            for (let referenceMarker of gmarkers) {
+                if (referenceMarker.lat > maxLat) {
+                    maxLat = referenceMarker.lat
+                }
+                if (referenceMarker.lat < minLat) {
+                    minLat = referenceMarker.lat
+                }
+
+                if (referenceMarker.lng > maxLng) {
+                    maxLng = referenceMarker.lng
+                }
+                if (referenceMarker.lng < minLng) {
+                    minLng = referenceMarker.lng
+                }
+
+            }
+            return {
+                start: { lat: minLat - 3, lng: minLng - 3 },
+                end: { lat: maxLat + 3, lng: maxLng + 3 }
+            }
+        }
+
+        // Measures all the distances to travel to all points between teammates,
+        // keeping track of the one that results in the least CO2. 
+        // Marks that point on the map.
+        function getBestLocation() {
+
+            let startEndRange = getRange()
+            let start = startEndRange.start;
+            let end = startEndRange.end;
+
+            totalCo2 = 0.0;
+            bestCo2 = 999999999.9;
+            worstCo2 = -1.0;
+
+            currentPoint = { lat: start.lat, lng: start.lng };
+            latGranularity = .1
+            lngGranularity = .1
+            while (currentPoint.lat < end.lat) {
+                while (currentPoint.lng < end.lng) {
+                    let totalCo2 = 0.0
+                    for (let referenceMarker of gmarkers) {
+                        totalCo2 += parseFloat(convertToCO2(getDistance(currentPoint, referenceMarker)))
+                    }
+                    if (totalCo2 < bestCo2) {
+                        bestCo2 = totalCo2;
+                        bestCoords = { lat: currentPoint.lat, lng: currentPoint.lng };
+                    }
+                    else if (totalCo2 > worstCo2) {
+                        worstCo2 = totalCo2;
+                    }
+                    results.push({ lat: currentPoint.lat, lng: currentPoint.lng, co2: parseFloat(totalCo2) });
+                    currentPoint.lng += lngGranularity;
+                }
+                currentPoint.lat += latGranularity;
+                currentPoint.lng = start.lng;
+            }
+            bestMarker = new google.maps.Marker({
+                position: bestCoords,
+                map,
+                animation: google.maps.Animation.DROP,
+                title: "Hello World!"
+            });
+
+            // Draw lines to the best city
+            for (let referenceMarker of gmarkers) {
+                lines.push(new google.maps.Polyline({
+                    path: [
+                        bestCoords, referenceMarker
+                    ],
+                    geodesic: true,
+                    strokeColor: "#FF0000",
+                    strokeOpacity: 1.0,
+                    strokeWeight: 2,
+                }));
+            }
+            for (let line of lines) {
+                line.setMap(map)
+            }
+
+
+            var geocoder = new google.maps.Geocoder();
+
+            // Geocode the lat/lng of the to retrieve the city name to display to the user.
+            geocoder.geocode({ 'location': bestCoords }, function (results, status) {
+                if (status == google.maps.GeocoderStatus.OK) {
+                    for (let component of results[0].address_components) {
+                        if (component.types.indexOf("locality") != -1) {
+                            monday.execute("notice", {
+                                message: 'The best city is: ' + component.long_name + ', using ' + bestCo2.toFixed(2) + ' KgCO2',
+                                type: "success",
+                                timeout: 10000,
+                            });
+                        }
+                    }
+                }
+            })
+        }
+
+        function convertToHex(number) {
+            return ("0" + (Number(parseInt(number)).toString(16))).slice(-2).toUpperCase()
+        }
+
+        // Draw a heat map green being good CO2 and red being bad CO2 usage.
+        function drawHeatMap() {
+            let filteredResults = []
+            for (i = 0; i < results.length; i = i + 30) {
+                filteredResults.push(results[i]);
+            }
+            for (let result of filteredResults) {
+
+                // console.log(worstCo2)
+                if (((result.co2 - bestCo2) / (worstCo2 - bestCo2)) > .8) {
+                    continue;
+                }
+
+                heatMap.push(new google.maps.Circle({
+                    strokeColor: "#" + convertToHex(((result.co2 - bestCo2) / (worstCo2 - bestCo2)) * 255) + "" + convertToHex(255 - (((result.co2 - bestCo2) / (worstCo2 - bestCo2)) * 255)) + "00",
+                    strokeOpacity: 0.8,
+                    strokeWeight: 5,
+                    fillColor: "#" + convertToHex(((result.co2 - bestCo2) / (worstCo2 - bestCo2)) * 255) + "" + convertToHex(255 - (((result.co2 - bestCo2) / (worstCo2 - bestCo2)) * 255)) + "00",
+                    fillOpacity: .5,
+                    map,
+                    center: { lat: result.lat, lng: result.lng },
+                    radius: 500
+                }))
+            }
+        }
+
+        // Place person markers at the indicies defined in indices
+        function placeMarkers(indices) {
+            var geocoder = new google.maps.Geocoder();
+            gmarkers = [];
+            markers = [];
+            cities = [];
+            results = [];
+            bestCoords = {};
+
+            var count = 0;
+
+            for (let i of indices) {
+                var ptStr = userData.data.users[i].location;
+                var newAddress;
+                geocoder.geocode({ 'address': userData.data.users[i].location }, function (results, status) {
+                    if (status == google.maps.GeocoderStatus.OK) {
+                        newAddress = results[0].geometry.location;
+                        cities.push(results[0].address_components[0].long_name.toLowerCase())
+                        var latlng = new google.maps.LatLng(parseFloat(newAddress.lat()), parseFloat(newAddress.lng()));
+                        //console.log(JSON.stringify(results[0].geometry.location));
+                        gmarkers.push(JSON.parse(JSON.stringify(results[0].geometry.location)))
+
+                        count++;
+                        if (count == (indices.length)) {
+
+                            rangeResult = getRange();
+                            let centerLat = (rangeResult.start.lat + rangeResult.end.lat) / 2
+                            let centerLng = (rangeResult.start.lng + rangeResult.end.lng) / 2
+                            map.setCenter({ lat: centerLat, lng: centerLng })
+
+                            let min_distance = 99999999999;
+                            let min_distance_idx = -1;
+                            let distance = 0.0;
+
+                            for (j = 0; j < gmarkers.length; j++) {
+                                distance = 0.0;
+                                let tmpMarker = new google.maps.Marker({
+                                    position: JSON.parse(JSON.stringify(gmarkers[j])),
+                                    map,
+                                    animation: google.maps.Animation.DROP,
+                                    icon: iconsFromCities[cities[j]]
+                                });
+                                markers.push(tmpMarker)
+
+                                for (k = 0; k < gmarkers.length; k++) {
+                                    if (i != k) {
+                                        distance += getDistance(gmarkers[j], gmarkers[k]);
+                                    }
+                                }
+                                if (distance < min_distance) {
+                                    min_distance_idx = j;
+                                }
+                                tmpinfo = new google.maps.InfoWindow({
+                                    content: "Total Distance: " + distance.toFixed(2),
+                                });
+                                markers[j].addListener("click", () => {
+                                    tmpinfo.open({
+                                        anchor: markers[j],
+                                        map,
+                                        shouldFocus: false,
+                                    });
+                                });
+                                console.log("For an offsite in " + j + " it will be " + convertToCO2(distance))
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    </script>
     <style>
-    #map {
-	  height: 400px;
-	  /* The height is 400 pixels */
-	  width: 100%;
-	  /* The width is the width of the web page */
-	}
+        #map {
+            height: 100%;
+            width: 100%;
+        }
     </style>
-  </head>
-  <body>
-    <h3>My Google Maps Demo</h3>
-    <!--The div element for the map -->
+</head>
+
+<body>
     <div id="map"></div>
     <script
-      src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJ5et57HQ4OUOpLScdFM-5a-2PjRZl3uk&callback=initMap&v=weekly"
-      defer
-    ></script>
-  </body>
+        src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJ5et57HQ4OUOpLScdFM-5a-2PjRZl3uk&callback=initMap&v=weekly"
+        defer></script>
+</body>
+
 </html>
